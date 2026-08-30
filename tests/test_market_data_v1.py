@@ -9,6 +9,7 @@ from api.market_data_v1 import (
     _fetch_baostock_bars,
     _fetch_finshare_bars,
     _fetch_tradingview_bars,
+    _probe_tradingview,
     fetch_bars,
 )
 from data.base import KlineBar
@@ -96,3 +97,16 @@ class MarketDataV1BarsTest(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 400)
         self.assertEqual(json.loads(response.body)["error"]["code"], "INVALID_REQUEST")
+
+
+class MarketDataV1ProbeTest(unittest.TestCase):
+    """验证源级能力与实际数据源能力保持一致。"""
+
+    def test_tradingview_probe_declares_bar_capabilities(self):
+        """TradingView probe 必须声明 K 线能力，供前端路由筛选 Provider。"""
+        with patch.dict("sys.modules", {"tvDatafeed": unittest.mock.MagicMock()}):
+            result = _probe_tradingview()
+        self.assertEqual(result["status"], "online")
+        self.assertIn("index", result["capabilities"]["assetClasses"])
+        self.assertIn("daily", result["capabilities"]["bars"]["periods"])
+        self.assertIn("none", result["capabilities"]["bars"]["adjustments"])

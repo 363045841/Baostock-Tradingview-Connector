@@ -43,6 +43,13 @@ _TV_PERIOD_TO_TF = {
     "monthly": "1M",
 }
 _TV_ADJUST_TO_TF = {"qfq": "dividends", "splits": "splits", "none": "none"}
+_TV_SOURCE_CAPABILITIES = {
+    "assetClasses": ["stock", "index", "forex", "crypto", "unknown"],
+    "bars": {
+        "periods": _TV_PERIODS,
+        "adjustments": ["qfq", "splits", "none"],
+    },
+}
 _MAX_BAR_LIMIT = 5000
 _TV_BARS_PER_DAY = {
     "1min": 390,
@@ -447,6 +454,7 @@ def _probe_tradingview() -> dict:
             "status": "online",
             "checkedAt": int(datetime.now(timezone.utc).timestamp() * 1000),
             "latencyMs": round((time.perf_counter() - started) * 1000, 2),
+            "capabilities": _TV_SOURCE_CAPABILITIES,
         }
     except Exception as exc:
         return {
