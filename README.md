@@ -166,7 +166,8 @@ POST /api/v1/market-data/bars
 }
 ```
 
-`limit` 必填，范围为 1 到 5000。省略 `before` 时返回最新的 N 根 K 线；传入 `before`（UTC Unix 毫秒）时，返回严格早于该时间戳的上一页数据。每页均按时间升序返回。
+`limit` 必填，范围为 1 到 5000。省略 `beforeTimestamp` 时返回最新的 N 根 K 线；传入 `beforeTimestamp`（UTC Unix 毫秒）时，返回严格早于该时间戳的上一页数据。每页均按时间升序返回。
+`barAggregation` 选填，仅作为聚合口径透传并回显（本服务不做重采样，原生周期边界恒为 baostock / TradingView / finshare 的上游边界）。响应中的 `olderData` 为 `exhausted` / `unknown`，表示游标之前是否还有历史。
 
 ```json
 {
@@ -179,7 +180,8 @@ POST /api/v1/market-data/bars
   "period": "daily",
   "adjustment": "none",
   "limit": 100,
-  "before": 1735603200000
+  "barAggregation": "original",
+  "beforeTimestamp": 1735603200000
 }
 ```
 

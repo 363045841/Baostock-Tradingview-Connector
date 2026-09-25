@@ -27,6 +27,9 @@ SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 Period = Literal["1min", "5min", "15min", "30min", "60min", "daily", "weekly", "monthly"]
 Adjustment = Literal["qfq", "hfq", "none", "splits"]
+# 前端聚合口径契约：original 保留上游原生边界，aligned / europe-traditional 由数据源侧重采样
+BarAggregation = Literal["original", "aligned", "europe-traditional"]
+_ORIGINAL_BAR_AGGREGATION = "original"
 
 # 允许的 V1 数据源 ID
 _SUPPORTED_SOURCES = frozenset({"baostock", "tradingview", "finshare"})
@@ -96,8 +99,9 @@ class BarRequest(BaseModel):
     instrument: InstrumentReference
     period: Period
     adjustment: Adjustment
+    barAggregation: BarAggregation | None = None
     limit: int = Field(ge=1, le=_MAX_BAR_LIMIT)
-    before: int | None = Field(default=None, ge=0)
+    beforeTimestamp: int | None = Field(default=None, ge=0)
 
     model_config = {"extra": "forbid"}
 
@@ -141,14 +145,14 @@ def _date_from_ms(value: int) -> str:
     return datetime.fromtimestamp(value / 1000, tz=timezone.utc).astimezone(SHANGHAI_TZ).date().isoformat()
 
 
-def _bar_window_start(before: int | None, limit: int, period: str) -> str:
+def _bar_window_start(before_timestamp: int | None, limit: int, period: str) -> str:
     """按周期估算满足分页请求所需的日期窗口起点。"""
     if period in {"daily", "weekly", "monthly"}:
         # 日期型 SDK 没有 latest/offset 参数；读取完整日线历史才能覆盖到期或退市品种。
         return "1990-01-01"
     end = (
-        datetime.fromtimestamp(before / 1000, tz=timezone.utc).astimezone(SHANGHAI_TZ)
-        if before is not None
+        datetime.fromtimestamp(before_timestamp / 1000, tz=timezone.utc).astimezone(SHANGHAI_TZ)
+        if before_timestamp is not None
         else datetime.now(SHANGHAI_TZ)
     )
     days_per_bar = {
@@ -163,25 +167,32 @@ def _bar_window_start(before: int | None, limit: int, period: str) -> str:
     return (end - timedelta(days=int(limit * days_per_bar) + 30)).date().isoformat()
 
 
-def _bar_window_end(before: int | None) -> str:
+def _bar_window_end(before_timestamp: int | None) -> str:
     """返回 SDK 日期范围的结束日期，实际游标排除在结果筛选时处理。"""
-    if before is None:
+    if before_timestamp is None:
         return datetime.now(SHANGHAI_TZ).date().isoformat()
-    return _date_from_ms(before)
+    return _date_from_ms(before_timestamp)
 
 
-def _paginate_bars(items: list[dict], limit: int, before: int | None) -> list[dict]:
+def _paginate_bars(items: list[dict], limit: int, before_timestamp: int | None) -> list[dict]:
     """排除游标及其后的 K 线，返回时间正序的最近一页。"""
-    eligible = [item for item in items if before is None or item["timestamp"] < before]
+    eligible = [
+        item for item in items if before_timestamp is None or item["timestamp"] < before_timestamp
+    ]
     eligible.sort(key=lambda item: item["timestamp"])
     return eligible[-limit:]
 
 
+def _older_data(item_count: int, limit: int) -> str:
+    """按返回根数判断游标之前是否还有历史；满页无法证明耗尽时保持 unknown。"""
+    return "exhausted" if item_count < limit else "unknown"
+
+
 def _tv_fetch_count(request: BarRequest) -> int:
     """按 TradingView 的仅 latest-n-bars 接口估算回溯所需根数。"""
-    if request.before is None:
+    if request.beforeTimestamp is None:
         return request.limit
-    cursor = datetime.fromtimestamp(request.before / 1000, tz=timezone.utc)
+    cursor = datetime.fromtimestamp(request.beforeTimestamp / 1000, tz=timezone.utc)
     elapsed_days = max(0, (datetime.now(timezone.utc) - cursor).total_seconds() / 86400)
     estimated = int(elapsed_days * _TV_BARS_PER_DAY[request.period] * 1.2) + request.limit + 2
     return min(_MAX_BAR_LIMIT, max(request.limit, estimated))
@@ -292,8 +303,8 @@ def _fetch_baostock_bars(request: BarRequest) -> dict:
     stock_code = str((request.instrument.providerRef or {}).get("stockCode") or request.instrument.symbol)
     result = get_stock_k_data(
         stock_code=stock_code,
-        start_date=_bar_window_start(request.before, request.limit, request.period),
-        end_date=_bar_window_end(request.before),
+        start_date=_bar_window_start(request.beforeTimestamp, request.limit, request.period),
+        end_date=_bar_window_end(request.beforeTimestamp),
         frequency=period_map[request.period],
         adjustflag={"qfq": "2", "hfq": "1", "none": "3"}[request.adjustment],
     )
@@ -314,14 +325,16 @@ def _fetch_baostock_bars(request: BarRequest) -> dict:
             "changePercent": _number(row.get("pctChg")),
             "turnoverRate": _number(row.get("turn")),
         })
-    items = _paginate_bars(items, request.limit, request.before)
+    items = _paginate_bars(items, request.limit, request.beforeTimestamp)
     return {
         "instrumentId": request.instrument.id,
         "period": request.period,
         "adjustment": request.adjustment,
+        "barAggregation": request.barAggregation or _ORIGINAL_BAR_AGGREGATION,
         "timezone": "Asia/Shanghai",
         "volumeUnit": "share",
         "items": items,
+        "olderData": _older_data(len(items), request.limit),
     }
 
 
@@ -364,19 +377,21 @@ def _fetch_finshare_bars(request: BarRequest) -> dict:
     try:
         items = fetch_finshare_bars(
             code,
-            _bar_window_start(request.before, request.limit, request.period),
-            _bar_window_end(request.before),
+            _bar_window_start(request.beforeTimestamp, request.limit, request.period),
+            _bar_window_end(request.beforeTimestamp),
         )
     except Exception as exc:
         raise _UpstreamError(str(exc)) from exc
-    items = _paginate_bars(items, request.limit, request.before)
+    items = _paginate_bars(items, request.limit, request.beforeTimestamp)
     return {
         "instrumentId": request.instrument.id,
         "period": request.period,
         "adjustment": request.adjustment,
+        "barAggregation": request.barAggregation or _ORIGINAL_BAR_AGGREGATION,
         "timezone": "Asia/Shanghai",
         "volumeUnit": "contract",
         "items": items,
+        "olderData": _older_data(len(items), request.limit),
     }
 
 
@@ -533,13 +548,15 @@ def _fetch_tradingview_bars(request: BarRequest) -> dict:
             "close": bar.close,
             "volume": bar.volume,
         })
-    items = _paginate_bars(items, request.limit, request.before)
+    items = _paginate_bars(items, request.limit, request.beforeTimestamp)
     return {
         "instrumentId": request.instrument.id,
         "period": request.period,
         "adjustment": request.adjustment,
+        "barAggregation": request.barAggregation or _ORIGINAL_BAR_AGGREGATION,
         "timezone": _TV_SESSION_TZ.get(session, "UTC"),
         "items": items,
+        "olderData": _older_data(len(items), request.limit),
     }
 
 

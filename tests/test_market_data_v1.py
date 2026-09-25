@@ -52,7 +52,7 @@ class MarketDataV1BarsTest(unittest.TestCase):
         ]
         request = _request(
             "finshare",
-            before=3_000,
+            beforeTimestamp=3_000,
             instrument={"id": "id", "symbol": "CU0", "exchange": "SHFE"},
         )
         with patch("api.market_data_v1.fetch_finshare_bars", return_value=items):
@@ -69,7 +69,7 @@ class MarketDataV1BarsTest(unittest.TestCase):
         source = unittest.mock.MagicMock()
         source.latest_snapshot.return_value = bars
         with patch("api.market_data_v1.TradingViewSource", return_value=source):
-            result = _fetch_tradingview_bars(_request("tradingview", before=3_000))
+            result = _fetch_tradingview_bars(_request("tradingview", beforeTimestamp=3_000))
         self.assertEqual([item["timestamp"] for item in result["items"]], [1_000, 2_000])
         source.latest_snapshot.assert_called_once()
 
@@ -98,6 +98,24 @@ class MarketDataV1BarsTest(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 400)
         self.assertEqual(json.loads(response.body)["error"]["code"], "INVALID_REQUEST")
+
+    def test_client_payload_with_bar_aggregation_and_cursor_is_accepted(self):
+        """前端固定携带 barAggregation / beforeTimestamp，必须被接受并回显聚合口径。"""
+        rows = [
+            {"date": "2024-01-01", "open": "1", "high": "1", "low": "1", "close": "1", "volume": "1"},
+        ]
+        with patch("api.market_data_v1.get_stock_k_data", return_value={"success": True, "data": rows}):
+            result = fetch_bars({
+                "sourceId": "baostock",
+                "instrument": {"id": "id", "symbol": "sh.600000", "exchange": "SH"},
+                "period": "daily",
+                "adjustment": "none",
+                "barAggregation": "original",
+                "limit": 2,
+                "beforeTimestamp": 1_735_603_200_000,
+            })
+        self.assertEqual(result["data"]["barAggregation"], "original")
+        self.assertEqual(result["data"]["olderData"], "exhausted")
 
 
 class MarketDataV1ProbeTest(unittest.TestCase):
