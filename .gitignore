@@ -17,3 +17,8 @@ wheels/
 
 # Local runtime config (contains network proxy settings)
 config/proxy.json
+
+# 股票目录 SQLite 快照
+data/*.db
+data/*.db-wal
+data/*.db-shm

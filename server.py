@@ -1,14 +1,32 @@
+import asyncio
 import time
+from contextlib import asynccontextmanager
+from zoneinfo import ZoneInfo
+
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from stock_service import get_stock_k_data, query_all_stock
+from stock_directory import StockDirectoryError, list_stocks, warm_up
 from data.tradingview.source import TradingViewSource
 from data.datetime_ts import ts_open_to_ms, epoch_to_date_str
 from api.market_data_v1 import router as market_data_v1_router
 
-app = FastAPI(title="股票数据API服务", version="1.0.0")
+SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """启动时预热股票目录；失败不阻断服务，首个请求再报错。"""
+    try:
+        await asyncio.to_thread(warm_up)
+    except Exception as exc:
+        print(f"股票目录预热失败: {exc}")
+    yield
+
+
+app = FastAPI(title="股票数据API服务", version="1.0.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -77,12 +95,24 @@ def stock_k_data(
 
 
 @app.get("/api/stock/list", response_model=StockListResponse)
-def stock_list(date: Optional[str] = Query(None, description="查询日期，格式 2024-07-01")):
+def stock_list(
+    date: Optional[str] = Query(None, description="查询日期，格式 2024-07-01；留空读取本地目录快照")
+):
     """
-    获取所有股票列表
+    获取股票列表：指定日期实时查询，留空读取每日目录快照
     """
-    result = query_all_stock(date=date)
-    return result
+    if date:
+        return query_all_stock(date=date)
+    try:
+        entries, loaded_at = list_stocks()
+    except StockDirectoryError as exc:
+        return StockListResponse(success=False, error_code="UPSTREAM_UNAVAILABLE", error_msg=str(exc))
+    return StockListResponse(
+        success=True,
+        date=loaded_at.astimezone(SHANGHAI_TZ).strftime("%Y-%m-%d") if loaded_at else None,
+        data_count=len(entries),
+        data=[entry.as_row() for entry in entries],
+    )
 
 
 class TradingViewDataResponse(BaseModel):

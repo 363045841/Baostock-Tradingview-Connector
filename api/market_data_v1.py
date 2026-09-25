@@ -11,7 +11,8 @@ from fastapi import APIRouter, Body, Path
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from stock_service import get_stock_k_data, query_all_stock
+from stock_service import get_stock_k_data
+from stock_directory import StockDirectoryError, search_stocks
 from data.tradingview.source import TradingViewSource
 from data.tradingview.market_defaults import tv_auto_probe_plan
 from data.tradingview.symbol_lookup import lookup_tv_symbol_by_name
@@ -257,22 +258,14 @@ def _probe_baostock() -> dict:
 
 
 def _search_baostock(request: InstrumentSearchRequest) -> dict:
-    """搜索 Baostock 股票目录并转换为 V1 品种描述。"""
+    """搜索本地股票目录快照并转换为 V1 品种描述。"""
     if request.assetClasses is not None and "stock" not in request.assetClasses:
         return {"items": []}
-    result = query_all_stock()
-    if not result.get("success"):
-        raise _UpstreamError(result.get("error_msg", "Baostock query failed"))
-    keyword = request.keyword.casefold()
-    items = []
-    for row in result.get("data", []):
-        code = str(row.get("code", ""))
-        name = str(row.get("code_name", ""))
-        if keyword in code.casefold() or keyword in name.casefold():
-            items.append(_instrument(code, name))
-            if len(items) >= request.limit:
-                break
-    return {"items": items}
+    try:
+        entries = search_stocks(request.keyword, request.limit)
+    except StockDirectoryError as exc:
+        raise _UpstreamError(str(exc)) from exc
+    return {"items": [_instrument(entry.code, entry.code_name) for entry in entries]}
 
 
 def _fetch_baostock_bars(request: BarRequest) -> dict:
