@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -151,6 +152,14 @@ def load_stock_basic() -> list[DirectoryEntry]:
                     status=str(fields.get("status", "")),
                 )
             )
+        # SDK 在下一页请求失败时会静默返回 False，末页恰好满页即视为翻页中断
+        if result.error_code != "0":
+            raise StockDirectoryError(result.error_msg or "baostock query_stock_basic failed")
+        page_size = int(result.per_page_count or 0)
+        if page_size > 0 and len(result.data) == page_size:
+            raise StockDirectoryError(
+                "baostock stock directory paging was interrupted; refusing a partial snapshot"
+            )
         if not entries:
             raise StockDirectoryError("baostock returned an empty stock directory")
         return entries
@@ -197,6 +206,7 @@ class StockDirectoryCache:
 
     def warm_up(self) -> None:
         """预热目录，供服务启动时调用。"""
+        print("[stock-directory] warming up")
         self._directory()
 
     def search(self, keyword: str, limit: int) -> list[DirectoryEntry]:
@@ -224,10 +234,14 @@ class StockDirectoryCache:
             now = datetime.now(timezone.utc)
             if self._loaded_at is not None and now - self._loaded_at < self._ttl:
                 return self._entries
+            print("[stock-directory] fetching full directory from baostock")
+            started = time.perf_counter()
             entries = self._loader()
+            elapsed = time.perf_counter() - started
             self._entries = entries
             self._loaded_at = now
             self._persist(entries, now)
+            print(f"[stock-directory] loaded {len(entries)} entries in {elapsed:.2f}s")
             return self._entries
 
     def _read_store(self) -> None:
@@ -238,6 +252,7 @@ class StockDirectoryCache:
         snapshot = self._store.load()
         if snapshot is not None:
             self._entries, self._loaded_at = snapshot
+            print(f"[stock-directory] loaded {len(self._entries)} entries from local snapshot")
 
     def _persist(self, entries: list[DirectoryEntry], loaded_at: datetime) -> None:
         """落盘快照；持久化失败只告警，不影响本次内存结果。"""
@@ -246,7 +261,7 @@ class StockDirectoryCache:
         try:
             self._store.replace(entries, loaded_at)
         except (OSError, sqlite3.Error) as exc:
-            print(f"股票目录落盘失败: {exc}")
+            print(f"[stock-directory] failed to persist snapshot: {exc}")
 
 
 _cache: StockDirectoryCache | None = None
