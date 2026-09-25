@@ -9,6 +9,7 @@ from api.market_data_v1 import (
     _fetch_baostock_bars,
     _fetch_finshare_bars,
     _fetch_tradingview_bars,
+    _probe_baostock,
     _probe_tradingview,
     fetch_bars,
 )
@@ -101,6 +102,17 @@ class MarketDataV1BarsTest(unittest.TestCase):
 
 class MarketDataV1ProbeTest(unittest.TestCase):
     """验证源级能力与实际数据源能力保持一致。"""
+
+    def test_baostock_probe_declares_bar_capabilities(self):
+        """Baostock probe 必须声明 stock K 线能力，否则会被前端路由剔除。"""
+        login = unittest.mock.MagicMock(error_code="0", error_msg="")
+        with patch("api.market_data_v1.bs") as baostock:
+            baostock.login.return_value = login
+            result = _probe_baostock()
+        self.assertEqual(result["status"], "online")
+        self.assertIn("stock", result["capabilities"]["assetClasses"])
+        self.assertIn("daily", result["capabilities"]["bars"]["periods"])
+        self.assertIn("qfq", result["capabilities"]["bars"]["adjustments"])
 
     def test_tradingview_probe_declares_bar_capabilities(self):
         """TradingView probe 必须声明 K 线能力，供前端路由筛选 Provider。"""

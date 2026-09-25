@@ -189,6 +189,18 @@ def _tv_fetch_count(request: BarRequest) -> int:
 
 # ---------- Baostock ----------
 
+# Baostock 源级与品种级共用能力声明，与 _fetch_baostock_bars 的周期/复权实现保持一致
+_BAOSTOCK_BAR_PERIODS = ["5min", "15min", "30min", "60min", "daily", "weekly", "monthly"]
+_BAOSTOCK_BAR_ADJUSTMENTS = ["qfq", "hfq", "none"]
+_BAOSTOCK_SOURCE_CAPABILITIES = {
+    "assetClasses": ["stock"],
+    "bars": {
+        "periods": _BAOSTOCK_BAR_PERIODS,
+        "adjustments": _BAOSTOCK_BAR_ADJUSTMENTS,
+    },
+}
+
+
 def _instrument(code: str, name: str) -> dict[str, object]:
     """将 Baostock 股票记录转换为 V1 品种描述。"""
     market, symbol = code.split(".", 1) if "." in code else ("", code)
@@ -205,8 +217,8 @@ def _instrument(code: str, name: str) -> dict[str, object]:
         "providerRef": {"stockCode": code},
         "capabilities": {
             "bars": {
-                "periods": ["5min", "15min", "30min", "60min", "daily", "weekly", "monthly"],
-                "adjustments": ["qfq", "hfq", "none"],
+                "periods": _BAOSTOCK_BAR_PERIODS,
+                "adjustments": _BAOSTOCK_BAR_ADJUSTMENTS,
             }
         },
     }
@@ -231,7 +243,7 @@ def _number(value: object) -> Optional[float]:
 
 
 def _probe_baostock() -> dict:
-    """探测 Baostock 登录与上游可用性。"""
+    """探测 Baostock 登录与上游可用性，并声明股票 K 线能力。"""
     started = time.perf_counter()
     login = None
     try:
@@ -241,6 +253,7 @@ def _probe_baostock() -> dict:
             "status": "online" if online else "offline",
             "checkedAt": int(datetime.now(timezone.utc).timestamp() * 1000),
             "latencyMs": round((time.perf_counter() - started) * 1000, 2),
+            "capabilities": _BAOSTOCK_SOURCE_CAPABILITIES,
         }
         if not online:
             data["message"] = login.error_msg
@@ -251,6 +264,7 @@ def _probe_baostock() -> dict:
             "checkedAt": int(datetime.now(timezone.utc).timestamp() * 1000),
             "latencyMs": round((time.perf_counter() - started) * 1000, 2),
             "message": str(exc),
+            "capabilities": _BAOSTOCK_SOURCE_CAPABILITIES,
         }
     finally:
         if login is not None and login.error_code == "0":
