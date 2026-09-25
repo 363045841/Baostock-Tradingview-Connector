@@ -2,15 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# 配置 pip 镜像源
-RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ && \
-    pip config set global.trusted-host mirrors.aliyun.com
-
 # 安装 uv
 RUN pip install uv
-
-# 设置 uv 镜像源
-ENV UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 
 # 复制依赖文件
 COPY pyproject.toml uv.lock ./
