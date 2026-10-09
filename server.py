@@ -11,7 +11,7 @@ from stock_service import get_stock_k_data, query_all_stock
 from stock_directory import StockDirectoryError, list_stocks, warm_up
 from data.tradingview.source import TradingViewSource
 from data.datetime_ts import ts_open_to_ms, epoch_to_date_str
-from api.market_data_v1 import router as market_data_v1_router
+from api.market_data_v1 import live_bars_hub, router as market_data_v1_router
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -24,6 +24,8 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"股票目录预热失败: {exc}")
     yield
+    # 停止实时 K 线轮询，释放 TradingView socket
+    live_bars_hub.close()
 
 
 app = FastAPI(title="股票数据API服务", version="1.0.0", lifespan=lifespan)

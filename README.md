@@ -29,6 +29,7 @@ uv run python server.py
 | `/api/tradingview/kdata` | GET | TradingView | 全球品种 K 线 |
 | `/api/v1/market-data/bars` | POST | finshare | 期货日线 K 线（`cu0`、`IF2409` 等） |
 | `/api/v1/market-data/snapshot` | POST | finshare | 期货实时快照 |
+| `/api/v1/market-data/sources/tradingview/stream` | GET (SSE) | TradingView | 实时 K 线推送 |
 
 ---
 
@@ -302,6 +303,36 @@ GET /api/tradingview/kdata?symbol=XAUUSD&timeframe=5m&count=50
 
 # 中文名称
 GET /api/tradingview/kdata?symbol=小米集团&timeframe=1h&count=200
+```
+
+### GET /api/v1/market-data/sources/tradingview/stream（实时 K 线 SSE）
+
+probe 返回 `capabilities.liveBars: true`。返回 `text/event-stream`，每条消息是一行未命名 `data:` JSON：
+
+| 帧 | 说明 |
+|---|---|
+| `{type:"snapshot", symbol, period, bars}` | 连接后先发最近一段尾部 K 线 |
+| `{type:"forming", symbol, period, bar}` | 当前 K 线变化时推送 |
+| `{type:"closed", symbol, period, bar}` | 新 K 线出现时，上一根以终值推送 |
+| `{type:"status", symbol, period, status, detail?}` | `live` / `market-closed` / `upstream-error` |
+
+`bar = {timestamp, open, high, low, close, volume}`，`timestamp` 与 `/api/v1/market-data/bars` 同口径（UTC 毫秒）。`symbol`、`period` 原样回显请求值；以 `:` 开头的行是心跳（每 15 秒 `: ping`）。
+
+| 参数 | 说明 |
+|---|---|
+| `symbol` | 必填；支持 `NASDAQ:AAPL` 写法，否则按 bars 接口同样的规则自动探测交易所 |
+| `period` | `1min` `5min` `15min` `30min` `60min` `daily` `weekly` `monthly` |
+| `barAggregation` | `original`（默认）/ `aligned` / `europe-traditional`；TradingView 只有原生边界 |
+| `adjustment` | 可选，`splits`（默认）/ `qfq` / `none` |
+| `exchange` | 可选，显式交易所 |
+| `instrumentId` | 可选，`instruments/search` 返回的品种 id（`tradingview:<EXCHANGE\|auto>:<symbol>`）；优先级 instrumentId > exchange > 裸 symbol，与 `/bars` 解析出同一交易所 |
+
+同一序列的所有连接共享一个上游轮询（默认 5 秒，休市或出错时降频），断开即退订，最后一个订阅者离开时停止轮询。环境变量：`LIVE_BARS_POLL_INTERVAL_S`、`LIVE_BARS_IDLE_INTERVAL_S`、`LIVE_BARS_SNAPSHOT_SIZE`、`LIVE_BARS_MAX_FEEDS`（默认 32）、`LIVE_BARS_MAX_SUBSCRIBERS_PER_FEED`（默认 200）；超限返回 503。
+
+反向代理需关闭缓冲（nginx：`proxy_buffering off; proxy_read_timeout 1h;`，响应已带 `X-Accel-Buffering: no`）。
+
+```
+curl -N "http://localhost:8000/api/v1/market-data/sources/tradingview/stream?symbol=BTCUSDT&period=1min"
 ```
 
 ---

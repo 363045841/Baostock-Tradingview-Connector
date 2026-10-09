@@ -130,11 +130,17 @@ class TradingViewSource(DataSource):
         self._symbol: str = ""
         self._timeframe: str = ""
         self._exchange: str = ""
+        self._resolved_pair: tuple[str, str] | None = None
         self._snapshot_lock = threading.Lock()
 
     @property
     def exchange(self) -> str:
         return self._exchange
+
+    @property
+    def resolved_pair(self) -> tuple[str, str] | None:
+        """最近一次成功拉取实际使用的 (exchange, symbol)，供轮询方固定交易所、跳过重复探测。"""
+        return self._resolved_pair
 
     def set_exchange(self, exchange: str) -> None:
         self._exchange = (exchange or "").strip().upper()
@@ -326,6 +332,7 @@ class TradingViewSource(DataSource):
                     "TradingView auto probe picked %s (tried %s)",
                     label, ", ".join(tried),
                 )
+                self._resolved_pair = (exchange, code)
                 return df, exchange
         if last_exc is not None:
             raise last_exc
@@ -374,6 +381,8 @@ class TradingViewSource(DataSource):
                     n_bars=n + 1,
                     adjustment=self._adjust,
                 )
+                if df is not None and not df.empty:
+                    self._resolved_pair = (exchange, fetch_symbol)
         except DataSourceTransientError:
             raise
         except Exception as exc:

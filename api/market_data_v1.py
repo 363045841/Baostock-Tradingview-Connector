@@ -1,14 +1,15 @@
 """Baostock / TradingView V1 行情协议路由与字段转换。"""
 
+import calendar
 from datetime import datetime, timedelta, timezone
-from typing import Literal, Optional
+from typing import Literal, Optional, get_args
 from uuid import uuid4
 import time
 from zoneinfo import ZoneInfo
 
 import baostock as bs
-from fastapi import APIRouter, Body, Path
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Body, Path, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from stock_service import get_stock_k_data
@@ -21,6 +22,7 @@ from data.finshare.source import fetch_bars as fetch_finshare_bars
 from data.finshare.source import fetch_snapshot as fetch_finshare_snapshot
 from data.finshare.source import search as search_finshare
 from data.finshare.source import source_capabilities as finshare_capabilities
+from api.live_bars import LiveBarsHub, LiveCapacityError, sse_stream
 
 router = APIRouter()
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
@@ -53,6 +55,8 @@ _TV_SOURCE_CAPABILITIES = {
         "periods": _TV_PERIODS,
         "adjustments": ["qfq", "splits", "none"],
     },
+    # 实时 K 线经 GET /api/v1/market-data/sources/tradingview/stream（SSE）推送
+    "liveBars": True,
 }
 _MAX_BAR_LIMIT = 5000
 _TV_BARS_PER_DAY = {
@@ -461,7 +465,8 @@ def _tv_instrument(symbol: str, exchange: str = "") -> dict[str, object]:
             "bars": {
                 "periods": _TV_PERIODS,
                 "adjustments": ["qfq", "splits", "none"],
-            }
+            },
+            "liveBars": True,
         },
     }
 
@@ -649,3 +654,143 @@ def fetch_snapshot(request: SnapshotRequest = Body(...)) -> dict | JSONResponse:
     if request.sourceId != "finshare":
         return _failure(400, "UNSUPPORTED_CAPABILITY", f"{request.sourceId} does not support snapshot")
     return _dispatch(_fetch_finshare_snapshot, request)
+
+
+# ---------- TradingView 实时 K 线（SSE） ----------
+
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+def _tv_live_bar(bar) -> dict:
+    """KlineBar → LiveBar；时间戳口径与 _fetch_tradingview_bars 的 items 一致。"""
+    return {
+        "timestamp": int(bar.ts_open),
+        "open": bar.open,
+        "high": bar.high,
+        "low": bar.low,
+        "close": bar.close,
+        "volume": bar.volume,
+    }
+
+
+def _tv_bar_clock() -> float:
+    """与 K 线时间戳同一口径的"当前时间"（秒）。
+
+    tvDatafeed 以服务器本地时区生成 naive 时间，datetime_to_ts_ms 再按 UTC 解读；
+    这里对 now 做同样变换，使休市判定在非 UTC 部署下也不偏移。
+    """
+    return float(calendar.timegm(time.localtime()))
+
+
+class _TvLiveFetcher:
+    """单序列的 TradingView 轮询客户端；首次成功后固定实际交易所，避免每次自动探测。"""
+
+    def __init__(self, exchange: str, symbol: str, timeframe: str, adjust: str) -> None:
+        self._exchange = exchange
+        self._symbol = symbol
+        self._timeframe = timeframe
+        self._source = TradingViewSource(adjust=adjust)
+        self._connected = False
+        self._pinned = False
+
+    def __call__(self, count: int) -> list[dict]:
+        """拉取最近 count 根 K 线（时间正序），在工作线程中执行。"""
+        if not self._connected:
+            self._source.connect()
+            self._source.set_exchange(self._exchange)
+            self._source.subscribe(self._symbol, self._timeframe)
+            self._connected = True
+        bars = self._source.latest_snapshot(count)
+        resolved = self._source.resolved_pair
+        if not self._pinned and resolved and resolved[0]:
+            self._source.set_exchange(resolved[0])
+            self._source.subscribe(resolved[1], self._timeframe)
+            self._pinned = True
+        return [_tv_live_bar(bar) for bar in bars]
+
+    def close(self) -> None:
+        """关闭上游 socket；进行中的拉取随之失败退出。"""
+        self._source.disconnect()
+
+
+def _tv_feed_factory(key: tuple, period: str):
+    """为序列键 (exchange, symbol, period, adjust) 创建轮询函数与关闭回调。"""
+    exchange, symbol, _period, adjust = key
+    fetcher = _TvLiveFetcher(exchange, symbol, _TV_PERIOD_TO_TF[period], adjust)
+    return fetcher, fetcher.close
+
+
+live_bars_hub = LiveBarsHub(_tv_feed_factory, clock=_tv_bar_clock)
+
+
+def _tv_ref_from_instrument_id(instrument_id: str) -> tuple[str, str] | None:
+    """解析 _tv_instrument 生成的 ``tradingview:{EXCHANGE|auto}:{symbol}``。
+
+    与 _fetch_tradingview_bars 的解析口径一致：交易所段为 ``auto`` 时走同样的自动探测，
+    否则固定该交易所，保证实时流与 /bars 命中同一品种。格式不符返回 None。
+    """
+    parts = instrument_id.strip().split(":", 2)
+    if len(parts) != 3 or parts[0] != "tradingview" or not parts[2].strip():
+        return None
+    exchange = parts[1].strip().upper()
+    return ("" if exchange == "AUTO" else exchange), parts[2].strip()
+
+
+def _split_tv_symbol(symbol: str, exchange: str) -> tuple[str, str]:
+    """支持 ``EXCHANGE:SYMBOL`` 写法；显式 exchange 参数优先。"""
+    sym = symbol.strip()
+    ex = exchange.strip().upper()
+    if not ex and ":" in sym:
+        prefix, rest = sym.split(":", 1)
+        if prefix.strip() and rest.strip():
+            return prefix.strip().upper(), rest.strip()
+    return ("" if ex == "AUTO" else ex), sym
+
+
+@router.get("/api/v1/market-data/sources/{sourceId}/stream", response_model=None)
+async def stream_live_bars(
+    request: Request,
+    source_id: str = Path(alias="sourceId"),
+    symbol: str = Query("", max_length=128),
+    period: str = Query(""),
+    bar_aggregation: str = Query(_ORIGINAL_BAR_AGGREGATION, alias="barAggregation"),
+    adjustment: str = Query("splits"),
+    exchange: str = Query("", max_length=32),
+    instrument_id: str = Query("", alias="instrumentId", max_length=256),
+):
+    """实时 K 线 SSE：snapshot → forming/closed 增量 → status；同序列共享一个上游轮询。"""
+    error = _source_error(source_id)
+    if error:
+        return error
+    if source_id != "tradingview":
+        return _failure(400, "UNSUPPORTED_CAPABILITY", f"{source_id} does not support liveBars")
+    if not symbol.strip():
+        return _failure(400, "INVALID_REQUEST", "symbol is required")
+    if period not in _TV_PERIOD_TO_TF:
+        return _failure(400, "INVALID_REQUEST", f"period must be one of {_TV_PERIODS}")
+    if bar_aggregation not in get_args(BarAggregation):
+        return _failure(400, "INVALID_REQUEST", f"barAggregation must be one of {list(get_args(BarAggregation))}")
+    if adjustment not in _TV_ADJUST_TO_TF:
+        return _failure(400, "INVALID_REQUEST", f"adjustment must be one of {sorted(_TV_ADJUST_TO_TF)}")
+
+    # 优先级：instrumentId > 显式 exchange（或 EXCHANGE:SYMBOL）> 裸 symbol 自动探测
+    if instrument_id.strip():
+        ref = _tv_ref_from_instrument_id(instrument_id)
+        if ref is None:
+            return _failure(
+                400, "INVALID_REQUEST", "instrumentId must look like tradingview:<EXCHANGE|auto>:<symbol>"
+            )
+        tv_exchange, tv_symbol = ref
+    else:
+        tv_exchange, tv_symbol = _split_tv_symbol(symbol, exchange)
+    # TradingView 只提供原生边界，barAggregation 不影响上游数据，故不进入序列键
+    key = (tv_exchange, tv_symbol.upper(), period, _TV_ADJUST_TO_TF[adjustment])
+    try:
+        feed, subscriber = live_bars_hub.subscribe(key, period, symbol)
+    except LiveCapacityError as exc:
+        return _failure(503, "UPSTREAM_UNAVAILABLE", str(exc))
+    return StreamingResponse(
+        sse_stream(live_bars_hub, feed, subscriber, request.is_disconnected),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
