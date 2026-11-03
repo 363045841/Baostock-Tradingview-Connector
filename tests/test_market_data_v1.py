@@ -128,7 +128,7 @@ class MarketDataV1ProbeTest(unittest.TestCase):
             baostock.login.return_value = login
             result = _probe_baostock()
         self.assertEqual(result["status"], "online")
-        self.assertIn("stock", result["capabilities"]["assetClasses"])
+        self.assertIn("stock", result["capabilities"]["instrumentTypes"])
         self.assertIn("daily", result["capabilities"]["bars"]["periods"])
         self.assertIn("qfq", result["capabilities"]["bars"]["adjustments"])
 
@@ -137,6 +137,6 @@ class MarketDataV1ProbeTest(unittest.TestCase):
         with patch.dict("sys.modules", {"tvDatafeed": unittest.mock.MagicMock()}):
             result = _probe_tradingview()
         self.assertEqual(result["status"], "online")
-        self.assertIn("index", result["capabilities"]["assetClasses"])
+        self.assertIn("index", result["capabilities"]["instrumentTypes"])
         self.assertIn("daily", result["capabilities"]["bars"]["periods"])
         self.assertIn("none", result["capabilities"]["bars"]["adjustments"])

@@ -48,7 +48,7 @@ _TV_PERIOD_TO_TF = {
 }
 _TV_ADJUST_TO_TF = {"qfq": "dividends", "splits": "splits", "none": "none"}
 _TV_SOURCE_CAPABILITIES = {
-    "assetClasses": ["stock", "index", "forex", "crypto", "unknown"],
+    "instrumentTypes": ["stock", "index", "forex", "crypto", "unknown"],
     "bars": {
         "periods": _TV_PERIODS,
         "adjustments": ["qfq", "splits", "none"],
@@ -89,7 +89,7 @@ class InstrumentSearchRequest(BaseModel):
     sourceId: str = Field(min_length=1)
     keyword: str = Field(min_length=1, max_length=128)
     limit: int = Field(ge=1, le=100)
-    assetClasses: list[str] | None = None
+    instrumentTypes: list[str] | None = None
 
 
 class BarRequest(BaseModel):
@@ -204,7 +204,7 @@ def _tv_fetch_count(request: BarRequest) -> int:
 _BAOSTOCK_BAR_PERIODS = ["5min", "15min", "30min", "60min", "daily", "weekly", "monthly"]
 _BAOSTOCK_BAR_ADJUSTMENTS = ["qfq", "hfq", "none"]
 _BAOSTOCK_SOURCE_CAPABILITIES = {
-    "assetClasses": ["stock"],
+    "instrumentTypes": ["stock"],
     "bars": {
         "periods": _BAOSTOCK_BAR_PERIODS,
         "adjustments": _BAOSTOCK_BAR_ADJUSTMENTS,
@@ -221,7 +221,7 @@ def _instrument(code: str, name: str) -> dict[str, object]:
         "sourceId": "baostock",
         "symbol": code,
         "name": name or symbol,
-        "assetClass": "stock",
+        "instrumentType": "stock",
         "exchange": exchange,
         "sessionId": "CN",
         "currency": "CNY",
@@ -284,7 +284,7 @@ def _probe_baostock() -> dict:
 
 def _search_baostock(request: InstrumentSearchRequest) -> dict:
     """搜索本地股票目录快照并转换为 V1 品种描述。"""
-    if request.assetClasses is not None and "stock" not in request.assetClasses:
+    if request.instrumentTypes is not None and "stock" not in request.instrumentTypes:
         return {"items": []}
     try:
         entries = search_stocks(request.keyword, request.limit)
@@ -364,7 +364,7 @@ def _probe_finshare() -> dict:
 
 def _search_finshare(request: InstrumentSearchRequest) -> dict:
     """搜索 finshare 期货代码并转换为 V1 品种描述。"""
-    if request.assetClasses is not None and "future" not in request.assetClasses:
+    if request.instrumentTypes is not None and "future" not in request.instrumentTypes:
         return {"items": []}
     return {"items": search_finshare(request.keyword, request.limit)}
 
@@ -420,8 +420,8 @@ def _tv_session(symbol: str, exchange: str) -> str:
     return "US"
 
 
-def _tv_asset_class(symbol: str, exchange: str) -> str:
-    """按品种/交易所推断资产类别。"""
+def _tv_instrument_type(symbol: str, exchange: str) -> str:
+    """按品种/交易所推断品种类型。"""
     from data.tradingview.market_defaults import (
         _KNOWN_INDEX_TICKERS,
         is_ashare_tv_request,
@@ -452,7 +452,7 @@ def _tv_instrument(symbol: str, exchange: str = "") -> dict[str, object]:
         "sourceId": "tradingview",
         "symbol": sym,
         "name": sym,
-        "assetClass": _tv_asset_class(sym, ex),
+        "instrumentType": _tv_instrument_type(sym, ex),
         "exchange": ex or "AUTO",
         "sessionId": session,
         "currency": currency,
@@ -507,9 +507,9 @@ def _search_tradingview(request: InstrumentSearchRequest) -> dict:
         add(sym, ex)
     if not items:
         add(keyword, "")
-    if request.assetClasses:
-        allowed = set(request.assetClasses)
-        items = [item for item in items if item.get("assetClass") in allowed]
+    if request.instrumentTypes:
+        allowed = set(request.instrumentTypes)
+        items = [item for item in items if item.get("instrumentType") in allowed]
     return {"items": items[: request.limit]}
 
 

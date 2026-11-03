@@ -55,7 +55,7 @@ def _import_sdk():
 def source_capabilities() -> dict[str, Any]:
     """返回 finshare 支持的期货源级能力声明。"""
     return {
-        "assetClasses": ["future"],
+        "instrumentTypes": ["future"],
         "bars": {"periods": ["daily"], "adjustments": ["none"]},
     }
 
@@ -80,7 +80,7 @@ def _instrument(symbol: str, exchange: str) -> dict[str, Any]:
         "sourceId": "finshare",
         "symbol": symbol,
         "name": symbol,
-        "assetClass": "future",
+        "instrumentType": "future",
         "exchange": exchange,
         "sessionId": "CN",
         "currency": "CNY",

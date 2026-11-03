@@ -11,11 +11,11 @@ from data.finshare.source import fetch_bars, fetch_snapshot, search, source_capa
 class FinshareSourceTest(unittest.TestCase):
     """验证 finshare 适配器的领域转换。"""
 
-    def test_source_capabilities_declare_future_asset_class(self):
+    def test_source_capabilities_declare_future_instrument_type(self):
         """验证源级能力只声明期货类别和实际 K 线能力。"""
         capabilities = source_capabilities()
         self.assertEqual(capabilities, {
-            "assetClasses": ["future"],
+            "instrumentTypes": ["future"],
             "bars": {"periods": ["daily"], "adjustments": ["none"]},
         })
 
