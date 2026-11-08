@@ -308,6 +308,25 @@ GET /api/tradingview/kdata?symbol=小米集团&timeframe=1h&count=200
 
 ## 通用说明
 
+### KCQ 交易日历（可选）
+
+启动独立的 [KCQ-Calendar-Connector](https://github.com/beiweimd/KCQ-Calendar-Connector) 并导入日历后，在启动本服务的同一终端设置：
+
+```powershell
+$env:KCQ_CALENDAR_URL = "http://127.0.0.1:8094"
+uv run python server.py
+```
+
+KCQ 仍连接本服务的 `8000` 端口。调用链为 `KCQ → 本服务 trading-calendar → Calendar 服务 → SQLite`。
+`KCQ_CALENDAR_URL` 是日历服务的基础地址，不含接口路径；Docker 中应使用容器可访问的服务名或宿主机地址。
+未配置时不声明日历能力；启用后，Baostock probe 和沪深品种搜索结果声明 `tradingCalendar: true`。
+配置变化后重启 Connector，并在 KCQ 重新探测数据源、搜索选择品种以刷新能力信息。
+
+`POST /api/v1/market-data/trading-calendar` 接受 KCQ V1 的 `sourceId`、`instrument`、`period`、`adjustment`、`barAggregation`、`anchorTimestamp`、`count`。
+目前仅转发 `baostock` 的 `SH/SZ`、`daily/original` 请求。日期与现有 Baostock 日线统一使用上海当地日期标签；保留原始品种标识并明确映射市场。
+北交所、TradingView、finshare、分钟与周月周期暂不支持。日历能力布尔值表示存在可用日历入口，不表示全部 K 线周期均受支持。
+日历上游请求超时为 5 秒；断连、超时或无效响应返回 `UPSTREAM_UNAVAILABLE`，范围不足等能力错误保留 `UNSUPPORTED_CAPABILITY`，不猜测日期或回退其他来源。行情 bars 路径保持原有行为。
+
 ### 错误响应
 
 所有接口在失败时返回：
