@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import baostock as bs
 from fastapi import APIRouter, Body, Path
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, StrictInt, ValidationError
 
 from stock_service import get_stock_k_data
 from stock_directory import StockDirectoryError, search_stocks
@@ -21,6 +21,7 @@ from data.finshare.source import fetch_bars as fetch_finshare_bars
 from data.finshare.source import fetch_snapshot as fetch_finshare_snapshot
 from data.finshare.source import search as search_finshare
 from data.finshare.source import source_capabilities as finshare_capabilities
+from data.calendar_client import CalendarError, calendar_enabled, fetch_calendar, supports_calendar
 
 router = APIRouter()
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
@@ -111,6 +112,20 @@ class SnapshotRequest(BaseModel):
 
     sourceId: str = Field(min_length=1)
     instrument: InstrumentReference
+
+
+class TradingCalendarRequest(BaseModel):
+    """日历沿用 KCQ V1 请求形状，周期能力由转发层明确判断。"""
+
+    sourceId: str = Field(min_length=1)
+    instrument: InstrumentReference
+    period: str
+    adjustment: Adjustment
+    barAggregation: str
+    anchorTimestamp: StrictInt = Field(gt=0)
+    count: StrictInt = Field(ge=1, le=4096)
+
+    model_config = {"extra": "forbid"}
 
 
 def _request_id() -> str:
@@ -212,6 +227,11 @@ _BAOSTOCK_SOURCE_CAPABILITIES = {
 }
 
 
+def _baostock_capabilities() -> dict:
+    """按服务配置声明源级日历能力，不改变原有 K 线能力。"""
+    return {**_BAOSTOCK_SOURCE_CAPABILITIES, "tradingCalendar": calendar_enabled()}
+
+
 def _instrument(code: str, name: str) -> dict[str, object]:
     """将 Baostock 股票记录转换为 V1 品种描述。"""
     market, symbol = code.split(".", 1) if "." in code else ("", code)
@@ -227,6 +247,7 @@ def _instrument(code: str, name: str) -> dict[str, object]:
         "currency": "CNY",
         "providerRef": {"stockCode": code},
         "capabilities": {
+            "tradingCalendar": supports_calendar(exchange),
             "bars": {
                 "periods": _BAOSTOCK_BAR_PERIODS,
                 "adjustments": _BAOSTOCK_BAR_ADJUSTMENTS,
@@ -264,7 +285,7 @@ def _probe_baostock() -> dict:
             "status": "online" if online else "offline",
             "checkedAt": int(datetime.now(timezone.utc).timestamp() * 1000),
             "latencyMs": round((time.perf_counter() - started) * 1000, 2),
-            "capabilities": _BAOSTOCK_SOURCE_CAPABILITIES,
+            "capabilities": _baostock_capabilities(),
         }
         if not online:
             data["message"] = login.error_msg
@@ -275,7 +296,7 @@ def _probe_baostock() -> dict:
             "checkedAt": int(datetime.now(timezone.utc).timestamp() * 1000),
             "latencyMs": round((time.perf_counter() - started) * 1000, 2),
             "message": str(exc),
-            "capabilities": _BAOSTOCK_SOURCE_CAPABILITIES,
+            "capabilities": _baostock_capabilities(),
         }
     finally:
         if login is not None and login.error_code == "0":
@@ -638,6 +659,22 @@ def fetch_time_share(request: dict = Body(...)) -> JSONResponse:
     if error:
         return error
     return _failure(400, "UNSUPPORTED_CAPABILITY", f"{source_id} does not support timeshare")
+
+
+@router.post("/api/v1/market-data/trading-calendar", response_model=None)
+def fetch_trading_calendar(request: dict = Body(...)) -> dict | JSONResponse:
+    """转发已启用的沪深日线日历请求，保持 V1 错误语义。"""
+    try:
+        parsed = TradingCalendarRequest.model_validate(request)
+    except ValidationError as exc:
+        return _failure(400, "INVALID_REQUEST", "Invalid trading calendar request", {"errors": exc.errors()})
+    error = _source_error(parsed.sourceId)
+    if error:
+        return error
+    try:
+        return _success(fetch_calendar(parsed.model_dump()))
+    except CalendarError as exc:
+        return _failure(exc.status, exc.code, str(exc))
 
 
 @router.post("/api/v1/market-data/snapshot", response_model=None)
