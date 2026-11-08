@@ -44,6 +44,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # 公开页面直连本机时 Chrome 的 PNA 预检需要显式允许。
+    allow_private_network=True,
 )
 app.include_router(market_data_v1_router)
 
